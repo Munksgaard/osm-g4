@@ -73,7 +73,7 @@ int read_file(int file_handle, void *buffer, int length) {
     }
 }
 
-int write_file(int file_handle, const void *buffer, int length) {
+int write_file(int file_handle, void *buffer, int length) {
     device_t *dev;
     gcd_t *gcd;
     int len;
@@ -146,7 +146,7 @@ void syscall_condition_broadcast(usr_cond_t *cond, usr_lock_t *lock)
     condition_broadcast((cond_t*) cond, (lock_t*) lock);
 }
 
-openfile_t syscall_open(const char *filename)
+openfile_t syscall_open(char *filename)
 {
     return vfs_open(filename);
 }
@@ -256,7 +256,7 @@ void syscall_handle(context_t *user_context)
             break;
         case SYSCALL_OPEN:
 	    user_context->cpu_regs[MIPS_REGISTER_V0] =
-		syscall_open((const char *)user_context->cpu_regs[MIPS_REGISTER_A1]);
+		syscall_open((char *)user_context->cpu_regs[MIPS_REGISTER_A1]);
 	    break;
         case SYSCALL_CLOSE:
 	    user_context->cpu_regs[MIPS_REGISTER_V0] =
