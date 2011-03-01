@@ -43,6 +43,7 @@
 #include "drivers/gcd.h"
 #include "kernel/lock.h"
 #include "kernel/lock_cond.h"
+#include "fs/vfs.h"
 
 typedef lock_t usr_lock_t;
 typedef cond_t usr_cond_t;
@@ -57,16 +58,19 @@ int read_file(int file_handle, void *buffer, int length) {
         return -1;
     }
 
-    dev = device_get(YAMS_TYPECODE_TTY, 0);
-    KERNEL_ASSERT(dev != NULL);
-
-    gcd = (gcd_t *)dev->generic_device;
-    KERNEL_ASSERT(gcd != NULL);
-
-    len = gcd->read(gcd, buffer, length);
-
-    return len;
-
+    if (file_handle == FILEHANDLE_STDIN) {
+	dev = device_get(YAMS_TYPECODE_TTY, 0);
+	KERNEL_ASSERT(dev != NULL);
+	
+	gcd = (gcd_t *)dev->generic_device;
+	KERNEL_ASSERT(gcd != NULL);
+	
+	len = gcd->read(gcd, buffer, length);
+	
+	return len;
+    } else {
+	return vfs_read((openfile_t)file_handle, buffer, length);
+    }
 }
 
 int write_file(int file_handle, const void *buffer, int length) {
@@ -74,20 +78,24 @@ int write_file(int file_handle, const void *buffer, int length) {
     gcd_t *gcd;
     int len;
 
-    if (file_handle == FILEHANDLE_STDIN) {
+    if (file_handle == FILEHANDLE_STDIN ||
+	file_handle == FILEHANDLE_STDERR) {
         return -1;
     }
 
-    dev = device_get(YAMS_TYPECODE_TTY, 0);
-    KERNEL_ASSERT(dev != NULL);
-
-    gcd = (gcd_t *)dev->generic_device;
-    KERNEL_ASSERT(gcd != NULL);
-
-    len = gcd->write(gcd, buffer, length);
-
-    return len;
-
+    if (file_handle == FILEHANDLE_STDOUT) {
+	dev = device_get(YAMS_TYPECODE_TTY, 0);
+	KERNEL_ASSERT(dev != NULL);
+	
+	gcd = (gcd_t *)dev->generic_device;
+	KERNEL_ASSERT(gcd != NULL);
+	
+	len = gcd->write(gcd, buffer, length);
+	
+	return len;
+    } else {
+	return vfs_write((openfile_t) file_handle, buffer, length);
+    }
 }
 
 int exec (const char *filename) {
@@ -136,6 +144,32 @@ void syscall_condition_signal(usr_cond_t *cond, usr_lock_t *lock)
 void syscall_condition_broadcast(usr_cond_t *cond, usr_lock_t *lock)
 {
     condition_broadcast((cond_t*) cond, (lock_t*) lock);
+}
+
+openfile_t syscall_open(const char *filename)
+{
+    return vfs_open(filename);
+}
+
+int syscall_close(openfile_t file)
+{
+    return vfs_close(file);
+}
+
+int syscall_create(char *pathname, int size)
+{
+    return vfs_create(pathname, size);
+}
+
+int syscall_delete(char *pathname)
+{
+    return vfs_remove(pathname);
+}
+
+void syscall_seek(openfile_t filehandle, int offset)
+{
+    if (offset < 0) return;
+    vfs_seek(filehandle, offset);
 }
 
 /**
@@ -220,6 +254,23 @@ void syscall_handle(context_t *user_context)
                     (usr_cond_t*)user_context->cpu_regs[MIPS_REGISTER_A1],
                     (usr_lock_t*)user_context->cpu_regs[MIPS_REGISTER_A2]);
             break;
+        case SYSCALL_OPEN:
+	    user_context->cpu_regs[MIPS_REGISTER_V0] =
+		syscall_open((const char *)user_context->cpu_regs[MIPS_REGISTER_A1]);
+	    break;
+        case SYSCALL_CLOSE:
+	    user_context->cpu_regs[MIPS_REGISTER_V0] =
+		syscall_close((openfile_t)user_context->cpu_regs[MIPS_REGISTER_A1]);
+        case SYSCALL_CREATE:
+	    user_context->cpu_regs[MIPS_REGISTER_V0] =
+		syscall_create((char *)user_context->cpu_regs[MIPS_REGISTER_A1],
+			       (int)user_context->cpu_regs[MIPS_REGISTER_A2]);
+        case SYSCALL_DELETE:
+	    user_context->cpu_regs[MIPS_REGISTER_V0] =
+		syscall_delete((char *)user_context->cpu_regs[MIPS_REGISTER_A1]);
+        case SYSCALL_SEEK:
+	    syscall_seek((openfile_t)user_context->cpu_regs[MIPS_REGISTER_A1],
+			 (int)user_context->cpu_regs[MIPS_REGISTER_A2]);
         default:
             KERNEL_PANIC("Unhandled system call\n");
     }
