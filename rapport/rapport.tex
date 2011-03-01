@@ -24,6 +24,15 @@
 
 \section*{Opgave 1} % {{{
 
+Vi har implementeret de forskellige systemkald i \verb+proc/syscall.c+
+som wrappers til de tilsvarende \verb+vfs+ funktioner.
+
+Vi har valgt at returnere fejl hvis man forsøger at skrive til
+\verb+STDERR+.
+
+Derudover har vi lavet et lille tjek i \verb+syscall_seek+, således at
+kernen ikke panikker hvis brugeren giver et negativt offset.
+
 % }}}
 
 \section*{Opgave 2} % {{{
