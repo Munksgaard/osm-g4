@@ -1,8 +1,8 @@
 /*
  * Process startup.
  *
- * Copyright (C) 2003-2005 Juha Aatrokoski, Timo Lilja,
- *       Leena Salmela, Teemu Takanen, Aleksi Virtanen.
+ * Copyright (C) 2003-2005 Juha Aatrokoski, Timo Lilja, Leena Salmela,
+ *       Teemu Takanen, Aleksi Virtanen, Troels Henriksen.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -35,26 +35,58 @@
  */
 
 #include "proc/process.h"
+#include "proc/syscall.h"
 #include "proc/elf.h"
 #include "kernel/thread.h"
 #include "kernel/assert.h"
 #include "kernel/interrupt.h"
 #include "kernel/config.h"
-#include "kernel/spinlock.h"
 #include "kernel/sleepq.h"
 #include "fs/vfs.h"
 #include "drivers/yams.h"
 #include "vm/vm.h"
 #include "vm/pagepool.h"
 
+
 /** @name Process startup
  *
  * This module contains a function to start a userland process.
  */
 
-process_table_t process_table[CONFIG_MAX_PROCESSES];
+process_table_t process_table[MAX_PROCESSES];
 
 spinlock_t process_table_slock;
+
+void process_init()
+{
+    int i;
+    spinlock_reset(&process_table_slock);
+    for (i = 0; i <= MAX_PROCESSES; i++) {
+        process_table[i].state = PROCESS_FREE;
+        process_table[i].executable[0] = 0;
+    }
+}
+
+
+process_id_t alloc_process_id(process_state_t newstate)
+{
+    int i;
+    interrupt_status_t intr_status;
+      
+    intr_status = _interrupt_disable();
+
+    spinlock_acquire(&process_table_slock);
+    for (i = 0; i <= MAX_PROCESSES; i++) {
+        if (process_table[i].state == PROCESS_FREE) {
+            process_table[i].state = newstate;
+            break;
+        }
+    }
+    spinlock_release(&process_table_slock);
+    _interrupt_set_state(intr_status);
+    return i <= MAX_PROCESSES ? i : -1;
+}
+
 
 /**
  * Starts one userland process. The thread calling this function will
@@ -68,7 +100,7 @@ spinlock_t process_table_slock;
  * @executable The name of the executable to be run in the userland
  * process
  */
-void process_start(const char *executable)
+void process_start(uint32_t pid)
 {
     thread_table_t *my_entry;
     pagetable_t *pagetable;
@@ -77,12 +109,15 @@ void process_start(const char *executable)
     uint32_t stack_bottom;
     elf_info_t elf;
     openfile_t file;
+    const char* executable;
 
     int i;
 
     interrupt_status_t intr_status;
 
     my_entry = thread_get_current_thread_entry();
+    my_entry->process_id = pid;
+    executable = process_table[pid].executable;
 
     /* If the pagetable of this thread is not NULL, we are trying to
        run a userland process for a second time in the same thread.
@@ -187,88 +222,108 @@ void process_start(const char *executable)
     user_context.cpu_regs[MIPS_REGISTER_SP] = USERLAND_STACK_TOP;
     user_context.pc = elf.entry_point;
 
+    vfs_close(file);
+
     thread_goto_userland(&user_context);
 
     KERNEL_PANIC("thread_goto_userland failed.");
 }
 
-void process_init(void) {
-    int i;
 
-    spinlock_reset(&process_table_slock);
-
-    for (i=0; i<CONFIG_MAX_PROCESSES; i++) {
-        process_table[i].state = PROCESS_FREE;
-        process_table[i].return_value = 0;
-    }
-}
-
-void _process_spawn(uint32_t executable) {
-    process_start((char *)executable);
-}
-
-process_id_t process_run_init(const char *executable, TID_t tid) {
+process_id_t process_spawn(const char* executable)
+{
+    TID_t thread;
     interrupt_status_t intr_status;
+    device_t *dev;
+    process_id_t my_pid = process_get_current_process();
+    process_id_t pid = alloc_process_id(PROCESS_RUNNING);
+
+    if (pid < 0) { /* Process table full */
+        return -1;
+    }
+    stringcopy(process_table[pid].executable, executable, PROCESS_NAME_MAX);
+    process_table[pid].retval = 0;
+    process_table[pid].first_zombie = -1;
+    process_table[pid].prev_zombie = -1;
+    process_table[pid].next_zombie = -1;
+    process_table[pid].parent = my_pid;
 
     intr_status = _interrupt_disable();
     spinlock_acquire(&process_table_slock);
 
-    process_id_t pid = -1;
-
-    int i;
-
-    for (i=0; i<CONFIG_MAX_PROCESSES; i++) {
-        if (process_table[i].state == PROCESS_FREE) {
-            pid = i;
-            break;
-        }
+    if (my_pid >= 0) {
+        process_table[my_pid].children++;
     }
-
-    if (pid < 0) {
-        return (process_id_t)-1;
-    }
-
-    stringcopy(process_table[pid].name, executable, MIN(strlen(executable), CONFIG_MAX_FILENAME_LENGTH));
-
-    process_table[pid].state = PROCESS_RUNNING;
-    process_table[pid].threads = 1;
-    process_table[pid].stack_end = (USERLAND_STACK_TOP & PAGE_SIZE_MASK) - 
-	(CONFIG_USERLAND_STACK_SIZE-1)*PAGE_SIZE;
-    process_table[pid].bot_free_stack = 0;
-
-
-    thread_get_thread_entry(tid)->process_id = pid;
 
     spinlock_release(&process_table_slock);
     _interrupt_set_state(intr_status);
 
+    process_table[pid].children = 0;
+    process_table[pid].threads = 1;
+    process_table[pid].stack_end =
+        (USERLAND_STACK_TOP & PAGE_SIZE_MASK)
+        - CONFIG_USERLAND_STACK_SIZE*PAGE_SIZE;
+    process_table[pid].bot_free_stack = 0;
+    dev = device_get(YAMS_TYPECODE_TTY, 0);
+    KERNEL_ASSERT(dev != NULL);
+    KERNEL_ASSERT(dev->generic_device != NULL);
+    process_table[pid].fds[0] =
+        process_table[pid].fds[1] = (gcd_t *)dev->generic_device;
+    thread = thread_create((void (*)(uint32_t))(&process_start), (uint32_t)pid);
+    thread_run(thread);
     return pid;
 }
 
-process_id_t process_spawn(const char *executable) {
-    TID_t tid = thread_create(&_process_spawn, (uint32_t)executable);
-    process_id_t pid = process_run_init(executable, tid);
 
-    thread_run(tid);
-
-    return pid;
+process_id_t process_get_current_process(void)
+{
+    return thread_get_current_thread_entry()->process_id;
 }
 
-int process_run(const char *executable) {
-    if (process_run_init(executable, thread_get_current_thread()) < 0) {
+process_table_t *process_get_current_process_entry(void)
+{
+    return &process_table[process_get_current_process()];
+}
+
+uint32_t process_join(process_id_t pid)
+{
+    process_id_t my_pid;
+    uint32_t retval;
+    interrupt_status_t intr_status;
+  
+    my_pid = process_get_current_process();
+    if (pid < 0
+        || pid >= MAX_PROCESSES
+        || process_table[pid].parent != my_pid) {
         return -1;
     }
 
-    process_start(executable);
+    intr_status = _interrupt_disable();
+    spinlock_acquire(&process_table_slock);
 
-    KERNEL_PANIC("process_start failed");
+    while (process_table[pid].state != PROCESS_ZOMBIE) {
+        sleepq_add(&process_table[pid]);
+        spinlock_release(&process_table_slock);
+        thread_switch();
+        spinlock_acquire(&process_table_slock);
+    }
+    retval = process_table[pid].retval;
+    process_table[my_pid].children--;
 
-    return -2;
+    /* Let children see it is gone. */
+    process_table[pid].retval = -1;
+    /* Make sure we can't join it again. */
+    process_table[pid].parent = -1;
+
+    if (process_table[pid].children == 0) {
+        process_table[pid].state = PROCESS_FREE;
+    }
+
+    spinlock_release(&process_table_slock);
+    _interrupt_set_state(intr_status);
+    return retval;
 }
 
-process_id_t process_get_current_process(void) {
-    return thread_get_current_thread_entry()->process_id;
-}
 
 /**
  * This function inserts the userspace thread stack in a list of free
@@ -290,12 +345,60 @@ void process_free_stack(thread_table_t *my_thread)
     uint32_t old_free_list = process_table[my_pid].bot_free_stack;
     /* Find the stack by applying a mask to the stack pointer. */
     uint32_t stack =
-	my_thread->user_context->cpu_regs[MIPS_REGISTER_SP] & USERLAND_STACK_MASK;
+        (my_thread->user_context->cpu_regs[MIPS_REGISTER_SP]
+         & USERLAND_STACK_MASK)
+        + CONFIG_USERLAND_STACK_SIZE*PAGE_SIZE
+        - 4;
 
     KERNEL_ASSERT(stack >= process_table[my_pid].stack_end);
 
     process_table[my_pid].bot_free_stack = stack;
     *(uint32_t*)stack = old_free_list;
+}
+
+
+void finish_given_process(process_id_t pid, int retval)
+{
+    process_id_t parent = process_table[pid].parent;
+    process_id_t zombie;
+
+    process_table[pid].retval = retval;
+
+    while ((zombie = process_table[pid].first_zombie) >= 0) {
+        /* We have zombie children - remove them. */
+        process_table[zombie].state = PROCESS_FREE;
+        process_table[zombie].retval = -1;
+        process_table[zombie].parent = -1;
+        process_table[pid].first_zombie = process_table[zombie].next_zombie;
+        process_table[pid].children--;
+    }
+
+    if (parent >= 0
+        && process_table[parent].state == PROCESS_ZOMBIE) {
+        /* We have a zombie parent, implying we can never be
+           joined. */
+        if (--(process_table[parent].children) == 0
+            && process_table[parent].retval < 0) {
+            /* Oh, and our parent is joined and we are the last
+               child. so free our parent. */
+            finish_given_process(parent, 0);
+        }
+        process_table[pid].state = PROCESS_FREE;
+    } else if (parent >= 0) {
+        /* Our parent is alive and well, add us to its list of zombies */
+        process_table[pid].state = PROCESS_ZOMBIE;
+        zombie = process_table[parent].first_zombie;
+        process_table[pid].next_zombie = zombie;
+        if (zombie >= 0) {
+            process_table[zombie].prev_zombie = pid;
+        }
+        process_table[parent].first_zombie = pid;
+    } else {
+        /* We have no parent? */
+        process_table[pid].state = PROCESS_FREE;
+    }
+
+    sleepq_wake(&process_table[pid]);
 }
 
 
@@ -315,7 +418,12 @@ void process_finish(int retval)
 {
     interrupt_status_t intr_status;
     thread_table_t *thread = thread_get_current_thread_entry();
-    process_id_t my_pid = thread->process_id;
+    process_id_t pid = thread->process_id;
+
+    if (retval < 0) {
+        /* Not permitted! */
+        retval = 0;
+    }
 
     intr_status = _interrupt_disable();
     spinlock_acquire(&process_table_slock);
@@ -323,53 +431,20 @@ void process_finish(int retval)
     /* Mark the stack as free so new threads can reuse it. */
     process_free_stack(thread);
 
-    if(--process_table[my_pid].threads == 0) {
-	/* We are the last thread - kill process! */
-	vm_destroy_pagetable(thread->pagetable);
+    if (--process_table[pid].threads == 0) {
+        /* We are the last thread - kill process! */
+        vm_destroy_pagetable(thread->pagetable);
 
-	/* Her er anden kode I måtte have i forbindelse
-	 * med afslutning af brugerprocesser.  
-	 */
-	
-	process_table[my_pid].return_value = retval;
-	process_table[my_pid].state = PROCESS_ZOMBIE;
-
-	sleepq_wake((void *)&process_table[my_pid]);
-
+        finish_given_process(pid, retval);
     }
+
     thread->pagetable = NULL;
+
     spinlock_release(&process_table_slock);
     _interrupt_set_state(intr_status);
     thread_finish();
 }
 
-uint32_t process_join(process_id_t pid) {
-    uint32_t retval;
-    interrupt_status_t intr_status;
-
-    if (process_table[pid].state == PROCESS_FREE) {
-        return -1;
-    }
-
-    intr_status = _interrupt_disable();
-    spinlock_acquire(&process_table_slock);
-
-    while(process_table[pid].state != PROCESS_ZOMBIE) {
-        sleepq_add((void *)&process_table[pid]);
-        spinlock_release(&process_table_slock);
-        thread_switch();
-        spinlock_acquire(&process_table_slock);
-    }
-    
-    retval = process_table[pid].return_value;
-    process_table[pid].state = PROCESS_FREE;
-
-    spinlock_release(&process_table_slock);
-    
-    _interrupt_set_state(intr_status);
-
-    return retval;
-}
 
 /**
  * We need to pass a bunch of data to the new thread, but we can only
@@ -394,55 +469,52 @@ void setup_thread(thread_params_t *params)
     int i;
     interrupt_status_t intr_status;
     thread_table_t *thread= thread_get_current_thread_entry();
-    
+
     /* Copy thread parameters. */
     int arg = params->arg;
     void (*func)(int) = params->func;
     process_id_t pid = thread->process_id = params->pid;
     thread->pagetable = params->pagetable;
     params->done = 1; /* OK, we don't need params any more. */
-    
+
     intr_status = _interrupt_disable();
     spinlock_acquire(&process_table_slock);
-    
+
     /* Set up userspace environment. */
     memoryset(&user_context, 0, sizeof(user_context));
     
     user_context.cpu_regs[MIPS_REGISTER_A0] = arg;
     user_context.pc = (uint32_t)func;
-    
+   
     /* Allocate thread stack */
     if (process_table[pid].bot_free_stack != 0) {
-	/* Reuse old thread stack. */
-	user_context.cpu_regs[MIPS_REGISTER_SP] =
-	    process_table[pid].bot_free_stack
-	    + CONFIG_USERLAND_STACK_SIZE*PAGE_SIZE
-	    - 4; /* Space for the thread argument */
-	process_table[pid].bot_free_stack =
-	    *(uint32_t*)process_table[pid].bot_free_stack;
+        /* Reuse old thread stack. */
+        user_context.cpu_regs[MIPS_REGISTER_SP] =
+            process_table[pid].bot_free_stack;
+        process_table[pid].bot_free_stack =
+            *(uint32_t*)process_table[pid].bot_free_stack;
     } else {
-	/* Allocate physical pages (frames) for the stack. */
-	for (i = 0; i < CONFIG_USERLAND_STACK_SIZE; i++) {
-	    phys_page = pagepool_get_phys_page();
-	    KERNEL_ASSERT(phys_page != 0);
-	    vm_map(thread->pagetable, phys_page, 
-		   process_table[pid].stack_end - (i+1)*PAGE_SIZE, 1);
-	}
-	user_context.cpu_regs[MIPS_REGISTER_SP] =
-	    process_table[pid].stack_end-4; /* Space for the thread argument */
-	process_table[pid].stack_end -= PAGE_SIZE*CONFIG_USERLAND_STACK_SIZE;
+        /* Allocate physical pages (frames) for the stack. */
+        for (i = 0; i < CONFIG_USERLAND_STACK_SIZE; i++) {
+            phys_page = pagepool_get_phys_page();
+            KERNEL_ASSERT(phys_page != 0);
+            vm_map(thread->pagetable, phys_page, 
+                   process_table[pid].stack_end - (i+1)*PAGE_SIZE, 1);
+        }
+        user_context.cpu_regs[MIPS_REGISTER_SP] =
+            process_table[pid].stack_end-4; /* Space for the thread argument */
+        process_table[pid].stack_end -= PAGE_SIZE*CONFIG_USERLAND_STACK_SIZE;
     }
-    
+
     tlb_fill(thread->pagetable);
-    
+
     spinlock_release(&process_table_slock);
     _interrupt_set_state(intr_status);
-    
+
     thread_goto_userland(&user_context);
 }
 
-
-TID_t process_fork(void (*func)(int), int arg)
+int process_fork(void (*func)(int), int arg)
 {
     TID_t tid;
     thread_table_t *thread = thread_get_current_thread_entry();
@@ -454,31 +526,30 @@ TID_t process_fork(void (*func)(int), int arg)
     params.arg = arg;
     params.pid = pid;
     params.pagetable = thread->pagetable;
-    
+
     intr_status = _interrupt_disable();
     spinlock_acquire(&process_table_slock);
-    
+
     tid = thread_create((void (*)(uint32_t))(setup_thread), (uint32_t)&params);
-    
+
     if (tid < 0) {
-	spinlock_release(&process_table_slock);
-	_interrupt_set_state(intr_status);
-	return -1;
+        spinlock_release(&process_table_slock);
+        _interrupt_set_state(intr_status);
+        return -1;
     }
-    
+
     process_table[pid].threads++;
-    
+
     spinlock_release(&process_table_slock);
     _interrupt_set_state(intr_status);
     
     thread_run(tid);
-    
+
     /* params will be dellocated when we return, so don't until the
        new thread is ready. */
     while (!params.done);
-    
+
     return tid;
 }
-
 
 /** @} */

@@ -95,7 +95,6 @@ void thread_goto_userland(context_t *usercontext);
 
 void thread_finish(void);
 
-thread_table_t *thread_get_thread_entry(TID_t tid);
 
 #define USERLAND_ENABLE_BIT 0x00000010
 

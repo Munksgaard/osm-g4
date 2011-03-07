@@ -39,8 +39,19 @@
 
 #include "lib/types.h"
 #include "kernel/config.h"
+#include "drivers/gcd.h"
+
+#define USERLAND_STACK_TOP 0x7fffeffc
 
 #define USERLAND_STACK_MASK (PAGE_SIZE_MASK*CONFIG_USERLAND_STACK_SIZE)
+
+#define MAX_PROCESSES 8
+
+#define PROCESS_NAME_MAX 128
+
+#define MAX_OPEN_FILES 2
+
+typedef int process_id_t;
 
 typedef enum {
     PROCESS_FREE,
@@ -50,39 +61,33 @@ typedef enum {
  
 /* process table data structure */
 typedef struct {
-    /* process state */
-    process_state_t state;     
-
-    /* process name */
-    char name[CONFIG_MAX_FILENAME_LENGTH];
-
-    /* return value */
-    uint32_t return_value; 
-    
+    char executable[PROCESS_NAME_MAX];
+    process_state_t state;
+    int retval; /* Return value - negative if we have been joined. */
+    gcd_t* fds[MAX_OPEN_FILES]; /* File descriptors - kinda - insufficient when
+                                   real filesystem support is added. */
+    process_id_t parent; /* Parent, negative if none. */
+    process_id_t first_zombie; /* PID of first nonjoined dead child. */
+    process_id_t prev_zombie; /* PID of previous zombie sibling. */
+    process_id_t next_zombie; /* PID of next zombie sibling. */
+    int children; /* Number of nonjoined child processes. */
     int threads; /* Number of threads in the process. */
     uint32_t stack_end; /* End of lowest stack. */
-    uint32_t bot_free_stack; /* Start of lowest free stack (0 if none). */
-    
+    uint32_t bot_free_stack; /* Start of lowest free stack (0 if
+                                none). */
 } process_table_t;
-
-typedef int process_id_t;
-
-void process_start(const char *executable);
 
 void process_init(void);
 
 process_id_t process_spawn(const char *executable);
 
-int process_run(const char *executable);
-
 process_id_t process_get_current_process(void);
+process_table_t *process_get_current_process_entry(void);
 
 void process_finish(int retval);
 
 uint32_t process_join(process_id_t pid);
 
 int process_fork(void (*func)(int), int arg);
-
-#define USERLAND_STACK_TOP 0x7fffeffc
 
 #endif
