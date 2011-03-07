@@ -6,21 +6,22 @@ enum thread_action { THREAD_START, THREAD_STARTSOON, THREAD_STARTED };
 
 int counter = 0;
 int thread_status[NUM_THREADS] = { THREAD_START };
-usr_lock_t print_lock;
+
+usr_lock_t output_lock;
+
 void countup(int me)
 {
     int me2 = me;
     int i, j;
     for (j = 0; j <= me; j++) {
-        for (i=0; i < (me+1)*1000; i++); {
-            syscall_lock_acquire(&print_lock); 
-            printf("%d,%d: %d\n", me, me2, counter++);
-            syscall_lock_release(&print_lock); 
-        }
+        for (i=0; i < (me+1)*10000; i++);
+        syscall_lock_acquire(&output_lock);
+        printf("%d,%d: %d\n", me, me2, counter++);
+        syscall_lock_release(&output_lock);
     }
-    syscall_lock_acquire(&print_lock); 
+    syscall_lock_acquire(&output_lock);
     printf("%d,%d: STOPPING\n", me,me2);
-    syscall_lock_release(&print_lock); 
+    syscall_lock_release(&output_lock);
     thread_status[me] = 1;
     syscall_exit(0);
 }
@@ -28,9 +29,8 @@ void countup(int me)
 
 int main()
 {
-    syscall_lock_create(&print_lock);
-    
     int i;
+    syscall_lock_create(&output_lock);
     while (1) {
         for (i = 0; i < NUM_THREADS; i++) {
             switch (thread_status[i]) {

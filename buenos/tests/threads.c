@@ -12,7 +12,7 @@ void countup(int me)
     int me2 = me;
     int i, j;
     for (j = 0; j <= me; j++) {
-        for (i=0; i < (me+1)*10000; i++);
+        for (i=0; i < (me+1)*1000; i++);
         printf("%d,%d: %d\n", me, me2, counter++);
     }
     printf("%d,%d: STOPPING\n", me,me2);
