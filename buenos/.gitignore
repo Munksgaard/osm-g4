@@ -14,5 +14,10 @@ tests/exec
 tests/threads
 tests/threads_locks
 tests/threads_ring
+tests/zombiegone
+tests/badexec
+tests/hello
+tests/shell
+tests/counter
 *.swp
 *~
