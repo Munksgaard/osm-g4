@@ -19,7 +19,7 @@
 
 #define FAT32_SNAME_LEN 11
 
-fs_t *fat32_init(gbt_t *disk);
+fs_t *fat32_init(gbd_t *disk);
 
 int fat32_unmount(fs_t *fs);
 int fat32_open(fs_t *fs, char *filename);
@@ -37,17 +37,14 @@ typedef struct {
     fat32_attrib_t attribs;
     uint32_t size;
 
-    // own cluster
-    uint32_t cluster;
-    uint32_t cluster_offset;
-    uint32_t sector_offset;
-
     // data cluster address
     uint32_t *first_cluster_high;
     uint32_t *first_cluster_low;
 
-    // address to logical page address
-    uint32_t page_addr;
+    // own cluster
+    uint32_t cluster;
+    uint32_t sector;
+    uint32_t entry;
 } fat32_direntry_t;
 
 #endif
