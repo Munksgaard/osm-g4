@@ -269,15 +269,18 @@ int fat32_open(fs_t *fs, char *filename)
 {
     fat32_t *fat;
     fat32_direntry_t *direntry;
+    uint32_t addr;
     int i;
 
     fat = (fat32_t *) fs->internal;
 
     semaphore_P(fat->lock);
 
-    direntry = pagepool_get_phys_page();
+    direntry->cluster = 2;
+    direntry->sector = 0;
+    direntry->entry = 0;
+
     if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
-        pagepool_free_phys_page(direntry);
         semaphore_V(fat->lock);
         return VFS_NOT_FOUND;
     }
@@ -291,7 +294,6 @@ int fat32_open(fs_t *fs, char *filename)
     }
 
     // file table is full
-    pagepool_free_phys_page(direntry);
     semaphore_V(fat->lock);
     return VFS_LIMIT;
 }
