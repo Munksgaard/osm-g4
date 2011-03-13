@@ -2,6 +2,7 @@
 #include "fs/vfs.h"
 #include "drivers/gbd.h"
 #include "kernel/semaphore.h"
+#include "kernel/panic.h"
 #include "vm/pagepool.h"
 
 #define DATA_GET(type, data, offset) ((type)*((uint8_t*)data)+offset)
@@ -9,25 +10,25 @@
 uint32_t l2b32(uint32_t x)
 {
     uint8_t *p = &x;
-    return p[0] + p[1] << 8 + p[2] << 16 + p[3] << 24;
+    return p[0] + (p[1] << 8) + (p[2] << 16) + (p[3] << 24);
 }
 
 uint32_t b2l32(uint32_t x)
 {
     uint8_t *p = &x;
-    return p[3] + p[2] << 8 + p[1] << 16 + p[0] << 24;
+    return p[3] + (p[2] << 8) + (p[1] << 16) + (p[0] << 24);
 }
 
 uint16_t l2b16(uint16_t x)
 {
     uint8_t *p = &x;
-    return p[0] + p[1] << 8;
+    return p[0] + (p[1] << 8);
 }
 
 uint16_t b2l16(uint16_t x)
 {
     uint8_t *p = &x;
-    return p[3] + p[2] << 8;
+    return p[3] + (p[2] << 8);
 }
 
 typedef struct {
@@ -43,7 +44,6 @@ typedef struct {
 
 uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
 {
-    //    return l2b32((((fs->fat_begin_lba + cluster * sizeof(uint32_t)));
     uint32_t addr;
     int r;
     gbd_request_t req;
