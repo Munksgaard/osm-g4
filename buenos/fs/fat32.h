@@ -21,6 +21,8 @@
 
 #define FAT32_MAX_FILES_OPEN 128
 
+#define FAT32_SECTOR_SIZE 512
+
 fs_t *fat32_init(gbd_t *disk);
 
 int fat32_unmount(fs_t *fs);

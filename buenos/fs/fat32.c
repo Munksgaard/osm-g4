@@ -41,7 +41,7 @@ typedef struct {
 
     semaphore_t *lock;
 
-    fat32_direntry_t filetable[FAT32_MAX_FILES_OPEN];
+    fat32_direntry_t* filetable[FAT32_MAX_FILES_OPEN];
 
     gbd_t *disk;
 } fat32_t;
@@ -235,9 +235,9 @@ fs_t *fat32_init(gbd_t *disk)
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    fat->filetable[0] = direntry;
-    fat32_read(fs, 0, fs->volume_name, 16, 0);
-    fat->filetable[0] = NULL;
+    fat->filetable[3] = direntry;
+    fat32_read(fs, 3, fs->volume_name, 16, 0);
+    fat->filetable[3] = NULL;
 
     fs->unmount = fat32_unmount;
     fs->open    = fat32_open;
@@ -326,14 +326,66 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
 {
     fat32_t *fat = (fat32_t *) fs->internal;
     gbd_request_t req;
+    fat32_direntry_t *direntry;
+    uint32_t rbuf;
+    int r;
+    int read;
+    int i;
+    uint32_t cluster;
 
     if (!IS_VALID_FILEID(fileid)) {
         return VFS_ERROR;
     }
 
-    semaphore_V(fat->lock);
+    semaphore_P(fat->lock);
 
-    // TODO: more magic...
+    if (fat->filetable[fileid-3] == NULL) {
+        semaphore_V(fat->lock);
+        return VFS_NOT_OPEN;
+    }
+
+    direntry = fat->filetable[fileid-3];
+
+    if (offset < 0 || offset > direntry->size) {
+        semaphore_V(fat->lock);
+        return VFS_ERROR;
+    }
+
+    bufsize = MIN(bufsize, ((int)direntry->size) - offset);
+
+    if (bufsize == 0) {
+        semaphore_V(fat->lock);
+        return 0;
+    }
+
+    rbuf = pagepool_get_phys_page();
+
+    req.block = cluster = direntry->first_cluster_low + (direntry->first_cluster_high << 4);
+    req.buf = rbuf;
+    req.sem = NULL;
+
+    while (cluster != 0xFFFFFFFF && read < bufsize) {
+        for (i = 0; i < fat->sectors_per_cluster; ++i) {
+            r = fat->disk->read_block(fat->disk, &req);
+
+            if (r == 0) {
+                pagepool_free_phys_page(rbuf);
+                semaphore_V(fat->lock);
+                return VFS_ERROR;
+            }
+
+            memcopy(r, buffer, rbuf);
+            read += r;
+
+            req.block += FAT32_SECTOR_SIZE;
+        }
+
+        req.block = cluster = fat32_fat_lookup(fat, cluster);
+    }
+
+    pagepool_free_phys_page(rbuf);
+    semaphore_V(fat->lock);
+    return read;
 }
 
 int fat32_write(fs_t *fs, int fileid, void *buffer, int datasize, int offset)
