@@ -11,25 +11,25 @@
 
 uint32_t l2b32(uint32_t x)
 {
-    uint8_t *p = &x;
+    uint8_t *p = (uint8_t *)&x;
     return p[0] + (p[1] << 8) + (p[2] << 16) + (p[3] << 24);
 }
 
 uint32_t b2l32(uint32_t x)
 {
-    uint8_t *p = &x;
+    uint8_t *p = (uint8_t *)&x;
     return p[3] + (p[2] << 8) + (p[1] << 16) + (p[0] << 24);
 }
 
 uint16_t l2b16(uint16_t x)
 {
-    uint8_t *p = &x;
+    uint8_t *p = (uint8_t *)&x;
     return p[0] + (p[1] << 8);
 }
 
 uint16_t b2l16(uint16_t x)
 {
-    uint8_t *p = &x;
+    uint8_t *p = (uint8_t *)&x;
     return p[3] + (p[2] << 8);
 }
 
