@@ -64,9 +64,9 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
     if(r == 0) {
         pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
         kprintf("fat32_fat_lookup: Error during disk read. Initialization failed.\n");
-        return NULL; 
+        return NULL;
     }
-    
+
     retval = DATA_GET(uint32_t, addr, cluster % (512/32));
 }
 
@@ -118,7 +118,7 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
             }
         }
 
-        stringcopy(entry->sname, (char *)(addr+(entry->entry * 32)), 
+        stringcopy(entry->sname, (char *)(addr+(entry->entry * 32)),
                    FAT32_SNAME_LEN);
         if (entry->sname[0] == 0) return -1;
 
@@ -188,7 +188,7 @@ fs_t *fat32_init(gbd_t *disk)
         semaphore_destroy(sem);
         pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
         kprintf("fat32_init: Error during disk read. Initialization failed.\n");
-        return NULL; 
+        return NULL;
     }
 
     // check that file system is FAT32
@@ -198,23 +198,17 @@ fs_t *fat32_init(gbd_t *disk)
         return NULL;
     }
 
-    //memcopy(2, &reserved_sector_count, (int *)(addr+FAT32_RESERVED_SECTOR_COUNT_OFFSET));
+    // read partition header
     reserved_sector_count = l2b16(DATA_GET(uint32_t, addr, FAT32_RESERVED_SECTOR_COUNT_OFFSET));
-
-    //memcopy(1, &secs_per_fat, (int *)(addr+FAT32_NUM_FATS_OFFSET));
     secs_per_fat = l2b32(DATA_GET(uint32_t, addr, FAT32_NUM_FATS_OFFSET));
-
-    //memcopy(4, &num_fats, (int *)(addr+FAT32_SECS_PER_FAT_OFFSET));
     num_fats = l2b32(DATA_GET(uint32_t, addr, FAT32_SECS_PER_FAT_OFFSET));
 
-    //memcopy(4, &fs->sectors_per_cluster, (uint32_t *)(addr+FAT32_SECS_PER_CLUS_OFFSET));
     fat->sectors_per_cluster = l2b32(DATA_GET(uint32_t, addr, FAT32_SECS_PER_CLUS_OFFSET));
-
-    //memcopy(4, &fs->root_dir_first_cluster, (uint32_t *)(addr+FAT32_ROOT_CLUS_OFFSET));
     fat->root_dir_first_cluster = l2b32(DATA_GET(uint32_t, addr, FAT32_ROOT_CLUS_OFFSET));
-
     fat->fat_begin_lba = FAT32_MBR_SIZE + reserved_sector_count;
     fat->cluster_begin_lba = FAT32_MBR_SIZE + reserved_sector_count + (num_fats * secs_per_fat);
+
+    fs = (fs_t *)addr;
 
     direntry->cluster = 2;
     direntry->sector = 0;
@@ -223,7 +217,56 @@ fs_t *fat32_init(gbd_t *disk)
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
-    return NULL;
+    fs->internal = (void *)fat;
+
+    fs->unmount = fat32_unmount;
+    fs->open    = fat32_open;
+    fs->close   = fat32_close;
+    fs->create  = fat32_create;
+    fs->remove  = fat32_remove;
+    fs->read    = fat32_read;
+    fs->write   = fat32_write;
+    fs->getfree = fat32_getfree;
+
+    return fs;
 }
 
+int fat32_unmount(fs_t *fs)
+{
+    return 0;
+}
+
+int fat32_open(fs_t *fs, char *filename)
+{
+    return 0;
+}
+
+int fat32_close(fs_t *fs, int fileid)
+{
+    return 0;
+}
+
+int fat32_create(fs_t *fs, char *filename, int size)
+{
+    return 0;
+}
+
+int fat32_remove(fs_t *fs, char *filename)
+{
+    return 0;
+}
+
+int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
+{
+    return 0;
+}
+
+int fat32_write(fs_t *fs, int fileid, void *buffer, int datasize, int offset)
+{
+    return 0;
+}
+
+int fat32_getfree(fs_t *fs)
+{
+    return 0;
+}
