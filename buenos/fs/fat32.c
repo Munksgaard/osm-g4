@@ -155,7 +155,7 @@ int search_dir(fat32_t *fat, fat32_direntry_t *entry, int (*pred)(fat32_direntry
 int search_dir_by_filename(fat32_t *fat, fat32_direntry_t *entry, const char *name)
 {
     while (next_dir_entry(fat, entry) >= 0) {
-        if (stringcmp(entry->sname, name) == 0)
+        if (stringcmp(entry->sname, name) == 0) {
             return VFS_OK;
         }
     }
@@ -319,7 +319,34 @@ int fat32_create(fs_t *fs, char *filename, int size)
 
 int fat32_remove(fs_t *fs, char *filename)
 {
-    return 0;
+    fat32_t *fat = (fat32_t *) fs->internal;
+    fat32_direntry_t *direntry;
+    gbd_request_t req;
+    int r;
+
+    semaphore_P(fat->lock);
+
+    direntry = pagepool_get_phys_page();
+    if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
+        pagepool_free_phys_page(direntry);
+        semaphore_V(fat->lock);
+        return VFS_NOT_FOUND;
+    }
+
+    req.block = (direntry->cluster * fat->sectors_per_cluster) + direntry->sector;
+    req.buf = lalalala; // TODO: make a buffer to write from
+    req.sem = NULL;
+    r = fat->disk->write_block(fat->disk, &req);
+
+    semaphore_V(fat->lock);
+    pagepool_free_phys_page(direntry);
+
+    if (r == 0) {
+        return VFS_ERROR;
+    }
+    else {
+        return VFS_OK;
+    }
 }
 
 int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
