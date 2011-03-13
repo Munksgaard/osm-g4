@@ -36,12 +36,14 @@
 
 #include "fs/filesystems.h"
 #include "fs/tfs.h"
+#include "fs/fat32.h"
 #include "drivers/device.h"
 
 /* NULL terminated table of all available filesystems. */
 
 static filesystems_t filesystems[] = {
     {"TFS", &tfs_init},
+    {"FAT32", &fat32_init},
     { NULL, NULL} /* Last entry must be a NULL pair. */ 
 };
 
