@@ -7,6 +7,8 @@
 
 #define DATA_GET(type, data, offset) ((type)*((uint8_t*)data)+offset)
 
+#define IS_VALID_FILEID(fid) (fid < FAT32_MAX_FILES_OPEN+3 && fid >= 2)
+
 uint32_t l2b32(uint32_t x)
 {
     uint8_t *p = &x;
@@ -38,6 +40,8 @@ typedef struct {
     uint32_t root_dir_first_cluster;
 
     semaphore_t *lock;
+
+    fat32_direntry_t filetable[FAT32_MAX_FILES_OPEN];
 
     gbd_t *disk;
 } fat32_t;
@@ -141,11 +145,22 @@ int search_dir(fat32_t *fat, fat32_direntry_t *entry, int (*pred)(fat32_direntry
 {
     while (next_dir_entry(fat, entry) >= 0) {
         if (pred(entry)) {
-            return 0;
+            return VFS_OK;
         }
     }
 
-    return -1;
+    return VFS_NOT_FOUND;
+}
+
+int search_dir_by_filename(fat32_t *fat, fat32_direntry_t *entry, const char *name)
+{
+    while (next_dir_entry(fat, entry) >= 0) {
+        if (stringcmp(entry->sname, name) == 0)
+            return VFS_OK;
+        }
+    }
+
+    return VFS_NOT_FOUND;
 }
 
 int is_volume_id (fat32_direntry_t *entry)
@@ -208,7 +223,10 @@ fs_t *fat32_init(gbd_t *disk)
     fat->fat_begin_lba = FAT32_MBR_SIZE + reserved_sector_count;
     fat->cluster_begin_lba = FAT32_MBR_SIZE + reserved_sector_count + (num_fats * secs_per_fat);
 
+    memoryset(fat->filetable, 0, sizeof(fat32_direntry_t *) * FAT32_MAX_FILES_OPEN);
+
     fs = (fs_t *)addr;
+    fs->internal = (void *)fat;
 
     direntry->cluster = 2;
     direntry->sector = 0;
@@ -217,7 +235,9 @@ fs_t *fat32_init(gbd_t *disk)
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    fs->internal = (void *)fat;
+    fat->filetable[0] = direntry;
+    fat32_read(fs, 0, fs->volume_name, 16, 0);
+    fat->filetable[0] = NULL;
 
     fs->unmount = fat32_unmount;
     fs->open    = fat32_open;
@@ -233,17 +253,63 @@ fs_t *fat32_init(gbd_t *disk)
 
 int fat32_unmount(fs_t *fs)
 {
-    return 0;
+    fat32_t *fat;
+    fat = (fat32_t *) fs->internal;
+
+    semaphore_P(fat->lock);
+    semaphore_destroy(fat->lock);
+
+    pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS((uint32_t) fs));
+
+    return VFS_OK;
 }
 
 int fat32_open(fs_t *fs, char *filename)
 {
-    return 0;
+    fat32_t *fat;
+    fat32_direntry_t *direntry;
+    int i;
+
+    fat = (fat32_t *) fs->internal;
+
+    semaphore_P(fat->lock);
+
+    direntry = pagepool_get_phys_page();
+    if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
+        pagepool_free_phys_page(direntry);
+        semaphore_V(fat->lock);
+        return VFS_NOT_FOUND;
+    }
+
+    for (i = 0; i < FAT32_MAX_FILES_OPEN; ++i) {
+        if (fat->filetable[i] == NULL) {
+            fat->filetable[i] = direntry;
+            semaphore_V(fat->lock);
+            return i+3;
+        }
+    }
+
+    // file table is full
+    pagepool_free_phys_page(direntry);
+    semaphore_V(fat->lock);
+    return VFS_LIMIT;
 }
 
 int fat32_close(fs_t *fs, int fileid)
 {
-    return 0;
+    fat32_t *fat;
+    fat = (fat32_t *) fs->internal;
+
+    if (!IS_VALID_FILEID(fileid)) {
+        return VFS_ERROR;
+    }
+
+    semaphore_P(fat->lock);
+    pagepool_free_phys_page(fat->filetable[fileid-3]);
+    fat->filetable[fileid-3] = NULL;
+    semaphore_V(fat->lock);
+
+    return VFS_OK;
 }
 
 int fat32_create(fs_t *fs, char *filename, int size)
@@ -258,7 +324,16 @@ int fat32_remove(fs_t *fs, char *filename)
 
 int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
 {
-    return 0;
+    fat32_t *fat = (fat32_t *) fs->internal;
+    gbd_request_t req;
+
+    if (!IS_VALID_FILEID(fileid)) {
+        return VFS_ERROR;
+    }
+
+    semaphore_V(fat->lock);
+
+    // TODO: more magic...
 }
 
 int fat32_write(fs_t *fs, int fileid, void *buffer, int datasize, int offset)

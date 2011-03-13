@@ -19,6 +19,8 @@
 
 #define FAT32_SNAME_LEN 11
 
+#define FAT32_MAX_FILES_OPEN 128
+
 fs_t *fat32_init(gbd_t *disk);
 
 int fat32_unmount(fs_t *fs);
