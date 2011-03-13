@@ -137,6 +137,22 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
     return 0;
 }
 
+int search_dir(fat32_t *fat, fat32_direntry_t *entry, int (*pred)(fat32_direntry_t *entry))
+{
+    while (next_dir_entry(fat, entry) >= 0) {
+        if (pred(entry)) {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int is_volume_id (fat32_direntry_t *entry)
+{
+    return (entry->attribs & 8);
+}
+
 fs_t *fat32_init(gbd_t *disk)
 {
     uint32_t addr;
@@ -148,6 +164,7 @@ fs_t *fat32_init(gbd_t *disk)
     int secs_per_fat;
     int num_fats;
     fat32_t *fat;
+    fat32_direntry_t *direntry;
 
     sem = semaphore_create(1);
     if (sem == NULL) {
@@ -199,6 +216,14 @@ fs_t *fat32_init(gbd_t *disk)
     fat->fat_begin_lba = FAT32_MBR_SIZE + reserved_sector_count;
     fat->cluster_begin_lba = FAT32_MBR_SIZE + reserved_sector_count + (num_fats * secs_per_fat);
 
+    direntry->cluster = 2;
+    direntry->sector = 0;
+    direntry->entry = 0;
+    if (search_dir(fat, direntry, is_volume_id) < 0) {
+        KERNEL_PANIC("Volume label not found\n");
+    }
+
     pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
     return NULL;
 }
+
