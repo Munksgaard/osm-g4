@@ -5,7 +5,7 @@
 #include "kernel/panic.h"
 #include "vm/pagepool.h"
 
-#define DATA_GET(type, data, offset) ((type)*((uint8_t*)data)+offset)
+#define DATA_GET(type, data, offset) ((type)(*((uint8_t*)data)+offset))
 
 #define IS_VALID_FILEID(fid) (fid < FAT32_MAX_FILES_OPEN+3 && fid >= 2)
 
@@ -56,7 +56,7 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
     addr = pagepool_get_phys_page();
     if(addr == 0) {
         kprintf("fat32_fat_lookup: could not allocate memory.\n");
-        return NULL;
+        return -1;
     }
     addr = ADDR_PHYS_TO_KERNEL(addr);
 
@@ -68,10 +68,11 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
     if(r == 0) {
         pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
         kprintf("fat32_fat_lookup: Error during disk read. Initialization failed.\n");
-        return NULL;
+        return -1;
     }
 
     retval = DATA_GET(uint32_t, addr, cluster % (512/32));
+    return retval;
 }
 
 int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
@@ -130,8 +131,8 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
     } while ((uint8_t)entry->sname[0] == FAT32_DIR_ENTRY_UNUSED ||
              (entry->attribs & 0x1111));
 
-    entry->first_cluster_high = DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x14);
-    entry->first_cluster_low = DATA_GET(uint32_t,  addr, (entry->entry * 32) + 0x1A);
+    entry->first_cluster_high = DATA_GET(uint32_t *, addr, (entry->entry * 32) + 0x14);
+    entry->first_cluster_low = DATA_GET(uint32_t *,  addr, (entry->entry * 32) + 0x1A);
     entry->size = DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x1C);
 
     semaphore_V(fat->lock);
