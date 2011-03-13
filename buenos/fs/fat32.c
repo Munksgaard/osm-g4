@@ -127,8 +127,8 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
         if (entry->sname[0] == 0) return -1;
 
         entry->attribs = DATA_GET(fat32_attrib_t, addr, (entry->entry * 32) + 0x0B);
-    } while (entry->sname[0] == FAT32_DIR_ENTRY_UNUSED ||
-             entry->attribs );
+    } while ((uint8_t)entry->sname[0] == FAT32_DIR_ENTRY_UNUSED ||
+             (entry->attribs & 0x1111));
 
     entry->first_cluster_high = DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x14);
     entry->first_cluster_low = DATA_GET(uint32_t,  addr, (entry->entry * 32) + 0x1A);
