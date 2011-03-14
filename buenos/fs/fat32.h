@@ -40,8 +40,8 @@ typedef struct {
     uint32_t size;
 
     // data cluster address
-    uint32_t *first_cluster_high;
-    uint32_t *first_cluster_low;
+    uint16_t *first_cluster_high;
+    uint16_t *first_cluster_low;
 
     // own cluster
     uint32_t cluster;
