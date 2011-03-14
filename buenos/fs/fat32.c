@@ -65,7 +65,13 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
     }
     addr = ADDR_PHYS_TO_KERNEL(addr);
 
-    req.block = fat->fat_begin_lba + (cluster / (512 / 32));
+    uint32_t fat_block = (cluster & ~0x7F) >> 7;
+    uint32_t block_entry = cluster & 0x7F;
+
+    req.block = fat->fat_begin_lba + fat_block;
+    kprintf("fatbegin: %d\n", fat->fat_begin_lba);
+    kprintf("fatblock: %d\n", req.block);
+    kprintf("block_entry: %d\n", block_entry);
 
     req.sem = NULL;
     req.buf = ADDR_KERNEL_TO_PHYS(addr);   /* disk needs physical addr */
@@ -76,7 +82,8 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
         return -1;
     }
 
-    retval = DATA_GET(uint32_t, addr, cluster % (512/32));
+    retval = l2b32(DATA_GET(uint32_t, addr, block_entry * 4));
+    kprintf("retval: %d\n", retval);
     return retval;
 }
 
@@ -85,7 +92,6 @@ int load_direntry(fat32_t *fat, fat32_direntry_t *entry)
     uint32_t addr;
     gbd_request_t req;
     int r;
-    uint32_t *blob;
     
     addr = pagepool_get_phys_page();
     if(addr == 0) {
@@ -108,9 +114,9 @@ int load_direntry(fat32_t *fat, fat32_direntry_t *entry)
 
     stringcopy(entry->sname, (char *)(addr+(entry->entry * 32)), FAT32_SNAME_LEN);
     entry->attribs = DATA_GET(fat32_attrib_t, addr, (entry->entry * 32) + 0x0B);
-    entry->first_cluster_high = DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x14);
-    entry->first_cluster_low = DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x1a);
-    entry->size = DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x1C);
+    entry->first_cluster_high = l2b16(DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x14));
+    entry->first_cluster_low = l2b16(DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x1a));
+    entry->size = l2b32(DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x1C));
 
     pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
 
@@ -144,7 +150,7 @@ int fat32_fat_cleanup(fat32_t *fat, uint32_t cluster)
             return -1;
         }
         
-        tmp = DATA_GET(uint32_t, addr, cluster % (512/32));
+        tmp = l2b32(DATA_GET(uint32_t, addr, cluster % (512/32)));
         DATA_SET(uint32_t, addr, cluster % (512/32), 0);
 
         r = fat->disk->write_block(fat->disk, &req);
@@ -173,14 +179,11 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
     }
     addr = ADDR_PHYS_TO_KERNEL(addr);
 
-    semaphore_P(fat->lock);
-
     req.block = cluster2block(fat, entry->cluster) + entry->sector;
     req.sem = NULL;
     req.buf = ADDR_KERNEL_TO_PHYS(addr);
     r = fat->disk->read_block(fat->disk, &req);
     if(r == 0) {
-        semaphore_V(fat->lock);
         pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
         kprintf("fat32_next_dir_entry: Error during disk read. FAIL\n");
         return -1;
@@ -190,7 +193,7 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
         if ((++entry->entry) >= (512/32)) {
             entry->entry = 0;
             entry->sector++;
-
+            
             if (entry->sector >= fat->sectors_per_cluster) {
                 entry->sector = 0;
                 entry->cluster = fat32_fat_lookup(fat, entry->cluster);
@@ -201,9 +204,7 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
             req.buf = ADDR_KERNEL_TO_PHYS(addr);
             r = fat->disk->read_block(fat->disk, &req);
             if(r == 0) {
-                semaphore_V(fat->lock);
                 pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
-                kprintf("fat32_next_dir_entry: Error during disk read. FAIL\n");
                 return -1;
             }
         }
@@ -214,13 +215,13 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
 
         entry->attribs = DATA_GET(fat32_attrib_t, addr, (entry->entry * 32) + 0x0B);
     } while ((uint8_t)entry->sname[0] == FAT32_DIR_ENTRY_UNUSED ||
-             (entry->attribs & 0x1111));
+             (entry->attribs & 0xf));
 
-    entry->first_cluster_high = DATA_GET(uint16_t *, addr, (entry->entry * 32) + 0x14);
-    entry->first_cluster_low  = DATA_GET(uint16_t *, addr, (entry->entry * 32) + 0x1A);
-    entry->size = DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x1C);
+    entry->first_cluster_high = l2b16(DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x14));
+    entry->first_cluster_low  = l2b16(DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x1A));
+    entry->size = l2b32(DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x1C));
 
-    semaphore_V(fat->lock);
+    kprintf("search low: %d, high: %d, offset: %d\n", entry->first_cluster_low, entry->first_cluster_high, req.block);
 
     pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
 
@@ -241,11 +242,14 @@ int search_dir(fat32_t *fat, fat32_direntry_t *entry, int (*pred)(fat32_direntry
 
 int search_dir_by_filename(fat32_t *fat, fat32_direntry_t *entry, const char *name)
 {
-    while (next_dir_entry(fat, entry) >= 0) {
+    kprintf("hej\n");
+    load_direntry(fat, entry);
+    do {
+        kprintf("vi søger efter '%s' og vi fandt '%s'\n", name, entry->sname);
         if (stringcmp(entry->sname, name) == 0) {
             return VFS_OK;
         }
-    }
+    } while (next_dir_entry(fat, entry) >= 0);
 
     return VFS_NOT_FOUND;
 }
@@ -360,22 +364,20 @@ int fat32_open(fs_t *fs, char *filename)
     int i;
 
     fat = (fat32_t *) fs->internal;
-    direntry = (fat32_direntry_t*) pagepool_get_phys_page();
+    direntry = (fat32_direntry_t*) ADDR_PHYS_TO_KERNEL(pagepool_get_phys_page());
 
     semaphore_P(fat->lock);
-    
     for (i = 0; i < CONFIG_MAX_OPEN_FILES; ++i) {
-        if (fat->filetable[i] != NULL) {
-            direntry = fat->filetable[i];
+        if (fat->filetable[i] == NULL) {
+            fat->filetable[i] = direntry;
             direntry->cluster = 2;
             direntry->sector = 0;
             direntry->entry = 0;
-            
             if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
                 semaphore_V(fat->lock);
                 return VFS_NOT_FOUND;
             }
-
+            
             fat->filetable[i] = direntry;
             semaphore_V(fat->lock);
             return i+3;
@@ -474,9 +476,12 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
     if (!IS_VALID_FILEID(fileid)) {
         return VFS_ERROR;
     }
+    kprintf("hej1\n");
 
     semaphore_P(fat->lock);
+    kprintf("hej2\n");
 
+    kprintf("fildi: %d\n", fileid);
     if (fat->filetable[fileid-3] == NULL) {
         semaphore_V(fat->lock);
         return VFS_NOT_OPEN;
@@ -498,33 +503,46 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
 
     rbuf = pagepool_get_phys_page();
 
-    cluster = (uint32_t)direntry->first_cluster_low + ((uint32_t)direntry->first_cluster_high << 4);
+    cluster = (uint32_t)direntry->first_cluster_low + ((uint32_t)direntry->first_cluster_high << 16);
+    kprintf("high: %d, low: %d\n", direntry->first_cluster_high, direntry->first_cluster_low);
+    kprintf("cluster: %d\n", cluster);
     req.block = cluster2block(fat, cluster);
+    kprintf("block: %d\n", req.block);
     req.buf = rbuf;
     req.sem = NULL;
 
     while (cluster != 0xFFFFFFFF && read < bufsize) {
         for (i = 0; i < fat->sectors_per_cluster; ++i) {
-            r = fat->disk->read_block(fat->disk, &req);
 
+            if (read >= bufsize) { goto finish; }
+
+            r = fat->disk->read_block(fat->disk, &req);
+            kprintf("hasdfj\n");
             if (r == 0) {
                 pagepool_free_phys_page(rbuf);
                 semaphore_V(fat->lock);
                 return VFS_ERROR;
             }
 
-            memcopy(r, buffer, (uint32_t*)rbuf);
-            read += r;
-
-            req.block += FAT32_SECTOR_SIZE;
+            kprintf("vi har læst: %d\n", MIN(512, bufsize - read));
+            memcopy(MIN(512, bufsize - read), buffer, ADDR_PHYS_TO_KERNEL(rbuf));
+            read += MIN(512, bufsize - read);
+            kprintf("kommer vi også her?\n");
+            req.block += 1;
         }
-
+        
+        kprintf("cluster %d\n", cluster);
         cluster = fat32_fat_lookup(fat, cluster);
+        kprintf("Ny cluster! %d\n", cluster); 
         req.block = cluster2block(fat, cluster);
+        kprintf("blokken blev da %d\n", req.block);
     }
+   
+ finish:
 
     pagepool_free_phys_page(rbuf);
     semaphore_V(fat->lock);
+    kprintf("færdige!\n");
     return read;
 }
 

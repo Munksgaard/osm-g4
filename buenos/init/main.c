@@ -67,6 +67,8 @@
  */
 
 void init_startup_fallback(void) {
+    openfile_t fil;
+    char tekst[20000];
 
     DEBUG("debuginit", "In init_startup_fallback\n");
 
@@ -100,6 +102,15 @@ void init_startup_fallback(void) {
 
 	DEBUG("debuginit", "Console test done, %d bytes written\n", len);
     }
+
+    fil = vfs_open("[myfatlabel]HALT      ");
+    kprintf("jaa vi kunne åbne en fil fil %d\n", fil);
+    if (vfs_read(fil, tekst, sizeof(tekst)) < 0) {
+        kprintf("FEJL DA VI LÆSTE!\n");
+    } else {
+        kprintf("Vi læste denne streng: %s\n", tekst);
+    }
+        
 
     /* Nothing else to do, so we shut the system down. */
     kprintf("Startup fallback code ends.\n");
