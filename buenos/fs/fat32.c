@@ -4,9 +4,11 @@
 #include "kernel/semaphore.h"
 #include "kernel/panic.h"
 #include "vm/pagepool.h"
+#include "kernel/kmalloc.h"
 
-#define DATA_GET(type, data, offset) ((type)(*((uint8_t*)data)+offset))
-
+#define DATA_GET(type, addr, offset) (*(type*)(((uint8_t*)addr)+offset))
+//#define DATA_SET(type, addr, offset, data) ((type)(*((uint8_t*)addr)+offset) = data)
+#define DATA_SET(type, addr, offset, data) memoryset(((uint8_t*)addr) + offset, data, sizeof(type))
 #define IS_VALID_FILEID(fid) (fid < FAT32_MAX_FILES_OPEN+3 && fid >= 2)
 
 uint32_t l2b32(uint32_t x)
@@ -46,6 +48,11 @@ typedef struct {
     gbd_t *disk;
 } fat32_t;
 
+inline uint32_t cluster2block(fat32_t *fat, uint32_t cluster) 
+{
+    return fat->cluster_begin_lba + (cluster - 2) * fat->sectors_per_cluster;
+}
+
 uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
 {
     uint32_t addr;
@@ -73,6 +80,49 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
 
     retval = DATA_GET(uint32_t, addr, cluster % (512/32));
     return retval;
+}
+
+int fat32_fat_cleanup(fat32_t *fat, uint32_t cluster)
+{
+    uint32_t addr;
+    int r;
+    gbd_request_t req;
+    uint32_t tmp;
+
+    addr = pagepool_get_phys_page();
+    if(addr == 0) {
+        pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
+        kprintf("fat32_fat_cleanup: couldnt allocate page\n");
+        return -1;
+    }
+    addr = ADDR_PHYS_TO_KERNEL(addr);
+
+    do {
+        req.block = fat->fat_begin_lba + (cluster / (512 / 32));
+        
+        req.sem = NULL;
+        req.buf = ADDR_KERNEL_TO_PHYS(addr);   /* disk needs physical addr */
+        r = fat->disk->read_block(fat->disk, &req);
+        if(r == 0) {
+            pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
+            kprintf("fat32_fat_cleanup: Error during disk read.\n");
+            return -1;
+        }
+        
+        tmp = DATA_GET(uint32_t, addr, cluster % (512/32));
+        DATA_SET(uint32_t, addr, cluster % (512/32), 0);
+
+        r = fat->disk->write_block(fat->disk, &req);
+        if(r == 0) {
+            pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
+            kprintf("fat32_fat_cleanup: Error during disk write.\n");
+            return -1;
+        }
+
+        cluster = tmp;
+    } while (cluster != 0xFFFFFFFF);
+
+    return 0;
 }
 
 int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
@@ -209,10 +259,15 @@ fs_t *fat32_init(gbd_t *disk)
     }
 
     // check that file system is FAT32
-    if (DATA_GET(uint32_t, addr, FAT32_SIG_OFFSET) != FAT32_SIGNATURE) {
+    if (l2b16(DATA_GET(uint16_t, addr, FAT32_SIG_OFFSET)) != FAT32_SIGNATURE) {
         semaphore_destroy(sem);
         pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
         return NULL;
+    }
+
+    fat = kmalloc(sizeof(fat32_t));
+    if (fat == NULL) {
+        KERNEL_PANIC("Could not allocate fat32_t structure\n");
     }
 
     // read partition header
@@ -274,7 +329,6 @@ int fat32_open(fs_t *fs, char *filename)
 {
     fat32_t *fat;
     fat32_direntry_t *direntry;
-    uint32_t addr;
     int i;
 
     fat = (fat32_t *) fs->internal;
@@ -328,33 +382,53 @@ int fat32_create(fs_t *fs, char *filename, int size)
 int fat32_remove(fs_t *fs, char *filename)
 {
     fat32_t *fat = (fat32_t *) fs->internal;
-    fat32_direntry_t *direntry;
+    fat32_direntry_t direntry;
     gbd_request_t req;
     int r;
+    int addr;
 
     semaphore_P(fat->lock);
 
-    direntry = pagepool_get_phys_page();
-    if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
-        pagepool_free_phys_page(direntry);
+    direntry.cluster = 2;
+    direntry.sector = 0;
+    direntry.entry = 0;
+
+    if (search_dir_by_filename(fat, &direntry, filename) == VFS_NOT_FOUND) {
         semaphore_V(fat->lock);
         return VFS_NOT_FOUND;
     }
 
-    req.block = (direntry->cluster * fat->sectors_per_cluster) + direntry->sector;
-    req.buf = lalalala; // TODO: make a buffer to write from
+    addr = pagepool_get_phys_page();
+
+    req.block = (direntry.cluster * fat->sectors_per_cluster) + direntry.sector;
+    req.buf = addr; // TODO: make a buffer to write from
     req.sem = NULL;
-    r = fat->disk->write_block(fat->disk, &req);
-
-    semaphore_V(fat->lock);
-    pagepool_free_phys_page(direntry);
-
-    if (r == 0) {
+    r = fat->disk->read_block(fat->disk, &req);
+    if(r == 0) {
+        semaphore_V(fat->lock);
+        pagepool_free_phys_page(addr);
         return VFS_ERROR;
     }
-    else {
-        return VFS_OK;
+
+    DATA_SET(uint8_t, addr, direntry.entry*32, 0xE5);
+
+    r = fat->disk->write_block(fat->disk, &req);
+    if(r == 0) {
+        semaphore_V(fat->lock);
+        pagepool_free_phys_page(addr);
+        return VFS_ERROR;
     }
+
+    if (fat32_fat_cleanup(fat, direntry.cluster) < 0) {
+        semaphore_V(fat->lock);
+        pagepool_free_phys_page(addr);
+        return VFS_ERROR;
+    }
+    
+
+    semaphore_V(fat->lock);
+
+    return VFS_OK;
 }
 
 int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
@@ -364,8 +438,8 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
     fat32_direntry_t *direntry;
     uint32_t rbuf;
     int r;
-    int read;
-    int i;
+    int read = 0;
+    uint32_t i;
     uint32_t cluster;
 
     if (!IS_VALID_FILEID(fileid)) {
@@ -374,14 +448,14 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
 
     semaphore_P(fat->lock);
 
-    if (fat->filetable[fileid-3] == NULL) {
+    if (fat->filetable[fileid-3].used == 0) {
         semaphore_V(fat->lock);
         return VFS_NOT_OPEN;
     }
 
-    direntry = fat->filetable[fileid-3];
+    direntry = &fat->filetable[fileid-3];
 
-    if (offset < 0 || offset > direntry->size) {
+    if (offset < 0 || (uint32_t)offset > direntry->size) {
         semaphore_V(fat->lock);
         return VFS_ERROR;
     }
@@ -395,7 +469,8 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
 
     rbuf = pagepool_get_phys_page();
 
-    req.block = cluster = direntry->first_cluster_low + (direntry->first_cluster_high << 4);
+    cluster = (uint32_t)direntry->first_cluster_low + ((uint32_t)direntry->first_cluster_high << 4);
+    req.block = cluster2block(fat, cluster);
     req.buf = rbuf;
     req.sem = NULL;
 
@@ -409,13 +484,14 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
                 return VFS_ERROR;
             }
 
-            memcopy(r, buffer, rbuf);
+            memcopy(r, buffer, (uint32_t*)rbuf);
             read += r;
 
             req.block += FAT32_SECTOR_SIZE;
         }
 
-        req.block = cluster = fat32_fat_lookup(fat, cluster);
+        cluster = fat32_fat_lookup(fat, cluster);
+        req.block = cluster2block(fat, cluster);
     }
 
     pagepool_free_phys_page(rbuf);
