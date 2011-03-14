@@ -6,7 +6,6 @@
 #include "vm/pagepool.h"
 
 #define DATA_GET(type, addr, offset) (*(type*)(((uint8_t*)addr)+offset))
-//#define DATA_SET(type, addr, offset, data) ((type)(*((uint8_t*)addr)+offset) = data)
 #define DATA_SET(type, addr, offset, data) memoryset(((uint8_t*)addr) + offset, data, sizeof(type))
 #define IS_VALID_FILEID(fid) (fid < CONFIG_MAX_OPEN_FILES+3 && fid >= 2)
 
