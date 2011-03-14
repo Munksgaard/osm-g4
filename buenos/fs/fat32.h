@@ -19,8 +19,6 @@
 
 #define FAT32_SNAME_LEN 11
 
-#define FAT32_MAX_FILES_OPEN 128
-
 #define FAT32_SECTOR_SIZE 512
 
 fs_t *fat32_init(gbd_t *disk);
@@ -40,7 +38,6 @@ typedef struct {
     char sname[FAT32_SNAME_LEN];
     fat32_attrib_t attribs;
     uint32_t size;
-    uint8_t used;
 
     // data cluster address
     uint32_t *first_cluster_high;

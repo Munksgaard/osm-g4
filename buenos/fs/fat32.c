@@ -4,12 +4,11 @@
 #include "kernel/semaphore.h"
 #include "kernel/panic.h"
 #include "vm/pagepool.h"
-#include "kernel/kmalloc.h"
 
 #define DATA_GET(type, addr, offset) (*(type*)(((uint8_t*)addr)+offset))
 //#define DATA_SET(type, addr, offset, data) ((type)(*((uint8_t*)addr)+offset) = data)
 #define DATA_SET(type, addr, offset, data) memoryset(((uint8_t*)addr) + offset, data, sizeof(type))
-#define IS_VALID_FILEID(fid) (fid < FAT32_MAX_FILES_OPEN+3 && fid >= 2)
+#define IS_VALID_FILEID(fid) (fid < CONFIG_MAX_OPEN_FILES+3 && fid >= 2)
 
 uint32_t l2b32(uint32_t x)
 {
@@ -43,7 +42,7 @@ typedef struct {
 
     semaphore_t *lock;
 
-    fat32_direntry_t filetable[FAT32_MAX_FILES_OPEN];
+    fat32_direntry_t *filetable[CONFIG_MAX_OPEN_FILES];
 
     gbd_t *disk;
 } fat32_t;
@@ -226,7 +225,6 @@ fs_t *fat32_init(gbd_t *disk)
     semaphore_t *sem;
     gbd_request_t req;
     int r;
-    int i;
     int reserved_sector_count;
     int secs_per_fat;
     int num_fats;
@@ -265,7 +263,7 @@ fs_t *fat32_init(gbd_t *disk)
         return NULL;
     }
 
-    fat = kmalloc(sizeof(fat32_t));
+    fat = (fat32_t*) pagepool_get_phys_page();
     if (fat == NULL) {
         KERNEL_PANIC("Could not allocate fat32_t structure\n");
     }
@@ -280,15 +278,12 @@ fs_t *fat32_init(gbd_t *disk)
     fat->fat_begin_lba = FAT32_MBR_SIZE + reserved_sector_count;
     fat->cluster_begin_lba = FAT32_MBR_SIZE + reserved_sector_count + (num_fats * secs_per_fat);
 
-    for (i=0; i<FAT32_MAX_FILES_OPEN; i++) {
-        // bliver fat nogensinde allokeret? TODO
-        fat->filetable[i].used = 0;
-    }
+    memoryset(fat->filetable, 0, sizeof(fat32_direntry_t *) * CONFIG_MAX_OPEN_FILES);
 
     fs = (fs_t *)addr;
     fs->internal = (void *)fat;
 
-    direntry = &fat->filetable[3];
+    direntry = fat->filetable[3];
     direntry->cluster = 2;
     direntry->sector = 0;
     direntry->entry = 0;
@@ -296,9 +291,9 @@ fs_t *fat32_init(gbd_t *disk)
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    fat->filetable[3].used = 1;
+    fat->filetable[3] = direntry;
     fat32_read(fs, 3, fs->volume_name, 16, 0);
-    fat->filetable[3].used = 0;
+    fat->filetable[3] = NULL;
 
     fs->unmount = fat32_unmount;
     fs->open    = fat32_open;
@@ -332,12 +327,13 @@ int fat32_open(fs_t *fs, char *filename)
     int i;
 
     fat = (fat32_t *) fs->internal;
+    direntry = (fat32_direntry_t*) pagepool_get_phys_page();
 
     semaphore_P(fat->lock);
     
-    for (i = 0; i < FAT32_MAX_FILES_OPEN; ++i) {
-        if (!fat->filetable[i].used) {
-            direntry = &fat->filetable[i];
+    for (i = 0; i < CONFIG_MAX_OPEN_FILES; ++i) {
+        if (fat->filetable[i] != NULL) {
+            direntry = fat->filetable[i];
             direntry->cluster = 2;
             direntry->sector = 0;
             direntry->entry = 0;
@@ -347,7 +343,7 @@ int fat32_open(fs_t *fs, char *filename)
                 return VFS_NOT_FOUND;
             }
 
-            fat->filetable[i].used = 1;
+            fat->filetable[i] = direntry;
             semaphore_V(fat->lock);
             return i+3;
         }
@@ -368,7 +364,7 @@ int fat32_close(fs_t *fs, int fileid)
     }
 
     semaphore_P(fat->lock);
-    fat->filetable[fileid-3].used = 0;
+    fat->filetable[fileid-3] = NULL;
     semaphore_V(fat->lock);
 
     return VFS_OK;
@@ -448,12 +444,12 @@ int fat32_read(fs_t *fs, int fileid, void *buffer, int bufsize, int offset)
 
     semaphore_P(fat->lock);
 
-    if (fat->filetable[fileid-3].used == 0) {
+    if (fat->filetable[fileid-3] == NULL) {
         semaphore_V(fat->lock);
         return VFS_NOT_OPEN;
     }
 
-    direntry = &fat->filetable[fileid-3];
+    direntry = fat->filetable[fileid-3];
 
     if (offset < 0 || (uint32_t)offset > direntry->size) {
         semaphore_V(fat->lock);
