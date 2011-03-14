@@ -40,6 +40,7 @@ typedef struct {
     char sname[FAT32_SNAME_LEN];
     fat32_attrib_t attribs;
     uint32_t size;
+    uint8_t used;
 
     // data cluster address
     uint32_t *first_cluster_high;

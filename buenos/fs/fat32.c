@@ -41,7 +41,7 @@ typedef struct {
 
     semaphore_t *lock;
 
-    fat32_direntry_t* filetable[FAT32_MAX_FILES_OPEN];
+    fat32_direntry_t filetable[FAT32_MAX_FILES_OPEN];
 
     gbd_t *disk;
 } fat32_t;
@@ -176,6 +176,7 @@ fs_t *fat32_init(gbd_t *disk)
     semaphore_t *sem;
     gbd_request_t req;
     int r;
+    int i;
     int reserved_sector_count;
     int secs_per_fat;
     int num_fats;
@@ -224,11 +225,15 @@ fs_t *fat32_init(gbd_t *disk)
     fat->fat_begin_lba = FAT32_MBR_SIZE + reserved_sector_count;
     fat->cluster_begin_lba = FAT32_MBR_SIZE + reserved_sector_count + (num_fats * secs_per_fat);
 
-    memoryset(fat->filetable, 0, sizeof(fat32_direntry_t *) * FAT32_MAX_FILES_OPEN);
+    for (i=0; i<FAT32_MAX_FILES_OPEN; i++) {
+        // bliver fat nogensinde allokeret? TODO
+        fat->filetable[i].used = 0;
+    }
 
     fs = (fs_t *)addr;
     fs->internal = (void *)fat;
 
+    direntry = &fat->filetable[3];
     direntry->cluster = 2;
     direntry->sector = 0;
     direntry->entry = 0;
@@ -236,9 +241,9 @@ fs_t *fat32_init(gbd_t *disk)
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    fat->filetable[3] = direntry;
+    fat->filetable[3].used = 1;
     fat32_read(fs, 3, fs->volume_name, 16, 0);
-    fat->filetable[3] = NULL;
+    fat->filetable[3].used = 0;
 
     fs->unmount = fat32_unmount;
     fs->open    = fat32_open;
@@ -275,19 +280,20 @@ int fat32_open(fs_t *fs, char *filename)
     fat = (fat32_t *) fs->internal;
 
     semaphore_P(fat->lock);
-
-    direntry->cluster = 2;
-    direntry->sector = 0;
-    direntry->entry = 0;
-
-    if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
-        semaphore_V(fat->lock);
-        return VFS_NOT_FOUND;
-    }
-
+    
     for (i = 0; i < FAT32_MAX_FILES_OPEN; ++i) {
-        if (fat->filetable[i] == NULL) {
-            fat->filetable[i] = direntry;
+        if (!fat->filetable[i].used) {
+            direntry = &fat->filetable[i];
+            direntry->cluster = 2;
+            direntry->sector = 0;
+            direntry->entry = 0;
+            
+            if (search_dir_by_filename(fat, direntry, filename) == VFS_NOT_FOUND) {
+                semaphore_V(fat->lock);
+                return VFS_NOT_FOUND;
+            }
+
+            fat->filetable[i].used = 1;
             semaphore_V(fat->lock);
             return i+3;
         }
@@ -308,8 +314,7 @@ int fat32_close(fs_t *fs, int fileid)
     }
 
     semaphore_P(fat->lock);
-    pagepool_free_phys_page(fat->filetable[fileid-3]);
-    fat->filetable[fileid-3] = NULL;
+    fat->filetable[fileid-3].used = 0;
     semaphore_V(fat->lock);
 
     return VFS_OK;
