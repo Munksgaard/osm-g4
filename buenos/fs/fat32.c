@@ -228,7 +228,7 @@ fs_t *fat32_init(gbd_t *disk)
     int secs_per_fat;
     int num_fats;
     fat32_t *fat;
-    fat32_direntry_t *direntry;
+    fat32_direntry_t direntry;
 
     sem = semaphore_create(1);
     if (sem == NULL) {
@@ -262,17 +262,20 @@ fs_t *fat32_init(gbd_t *disk)
         return NULL;
     }
 
-    fat = (fat32_t*) pagepool_get_phys_page();
+    fat = (fat32_t*) ADDR_PHYS_TO_KERNEL(pagepool_get_phys_page());
     if (fat == NULL) {
         KERNEL_PANIC("Could not allocate fat32_t structure\n");
     }
+
+    fat->lock = sem;
+    fat->disk = disk;
 
     // read partition header
     reserved_sector_count = l2b16(DATA_GET(uint32_t, addr, FAT32_RESERVED_SECTOR_COUNT_OFFSET));
     secs_per_fat = l2b32(DATA_GET(uint32_t, addr, FAT32_NUM_FATS_OFFSET));
     num_fats = l2b32(DATA_GET(uint32_t, addr, FAT32_SECS_PER_FAT_OFFSET));
 
-    fat->sectors_per_cluster = l2b32(DATA_GET(uint32_t, addr, FAT32_SECS_PER_CLUS_OFFSET));
+    fat->sectors_per_cluster = DATA_GET(uint8_t, addr, FAT32_SECS_PER_CLUS_OFFSET);
     fat->root_dir_first_cluster = l2b32(DATA_GET(uint32_t, addr, FAT32_ROOT_CLUS_OFFSET));
     fat->fat_begin_lba = FAT32_MBR_SIZE + reserved_sector_count;
     fat->cluster_begin_lba = FAT32_MBR_SIZE + reserved_sector_count + (num_fats * secs_per_fat);
@@ -282,15 +285,14 @@ fs_t *fat32_init(gbd_t *disk)
     fs = (fs_t *)addr;
     fs->internal = (void *)fat;
 
-    direntry = fat->filetable[3];
-    direntry->cluster = 2;
-    direntry->sector = 0;
-    direntry->entry = 0;
-    if (search_dir(fat, direntry, is_volume_id) < 0) {
+    direntry.cluster = 2;
+    direntry.sector = 0;
+    direntry.entry = 0;
+    if (search_dir(fat, &direntry, is_volume_id) < 0) {
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    fat->filetable[3] = direntry;
+    fat->filetable[3] = &direntry;
     fat32_read(fs, 3, fs->volume_name, 16, 0);
     fat->filetable[3] = NULL;
 
