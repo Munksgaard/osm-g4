@@ -37,6 +37,23 @@ kernen ikke panikker hvis brugeren giver et negativt offset.
 
 \section*{Opgave 2} % {{{
 
+Vi har lavet en delvis implementering af FAT32 understøttelse til
+Buenos. Vores implementering kan mounte et FAT32 filsystem, åbne,
+lukke og læse filer fra den. Vi har desuden lavet en utestet version
+af \verb+remove+.
+
+Løsningen er dog ikke fyldestgørende. Specielt \verb+read+ har voldt
+os mange kvaler. Blandt andet har vi problemer med at læse filer over
+en hvis størrelse, og nogen gange kommer der sjove tegn i slutningen
+af de den streng vi læser ind. Derudover går vores system helt i kage
+når vi prøver at læse en 20.000 byte stor fil.
+
+Vores filtabel består af pegere til \verb+direntry+ strukturer, som
+allokeres på hver deres page. Dette er højest uønskeligt, da det
+spilder utroligt meget plads, men da vi ikke har adgang til dynamisk
+lagerallokering på andre måder så vi os nødsagede til at bruge denne
+tilgang til problemet.
+
 % }}}
 
 \end{document}
