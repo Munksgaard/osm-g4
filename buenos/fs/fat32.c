@@ -80,6 +80,43 @@ uint32_t fat32_fat_lookup(fat32_t *fat, uint32_t cluster)
     return retval;
 }
 
+int load_direntry(fat32_t *fat, fat32_direntry_t *entry)
+{
+    uint32_t addr;
+    gbd_request_t req;
+    int r;
+    uint32_t *blob;
+    
+    addr = pagepool_get_phys_page();
+    if(addr == 0) {
+        pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
+        kprintf("fat32_load_direntry: couldnt allocate page\n");
+        return -1;
+    }
+
+    addr = ADDR_PHYS_TO_KERNEL(addr);
+
+    req.block = cluster2block(fat, entry->cluster) + entry->sector;
+    req.sem = NULL;
+    req.buf = ADDR_KERNEL_TO_PHYS(addr);   /* disk needs physical addr */
+    r = fat->disk->read_block(fat->disk, &req);
+    if(r == 0) {
+        pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
+        kprintf("fat32_load_direntry: Error during disk read.\n");
+        return -1;
+    }
+
+    stringcopy(entry->sname, (char *)(addr+(entry->entry * 32)), FAT32_SNAME_LEN);
+    entry->attribs = DATA_GET(fat32_attrib_t, addr, (entry->entry * 32) + 0x0B);
+    entry->first_cluster_high = DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x14);
+    entry->first_cluster_low = DATA_GET(uint16_t, addr, (entry->entry * 32) + 0x1a);
+    entry->size = DATA_GET(uint32_t, addr, (entry->entry * 32) + 0x1C);
+
+    pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS(addr));
+
+    return 0;
+}
+
 int fat32_fat_cleanup(fat32_t *fat, uint32_t cluster)
 {
     uint32_t addr;
@@ -139,7 +176,6 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
     semaphore_P(fat->lock);
 
     req.block = cluster2block(fat, entry->cluster) + entry->sector;
-    kprintf("block: %p\n", req.block);
     req.sem = NULL;
     req.buf = ADDR_KERNEL_TO_PHYS(addr);
     r = fat->disk->read_block(fat->disk, &req);
@@ -151,7 +187,6 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
     }
 
     do {
-        kprintf("entry: %d\n", entry->entry);
         if ((++entry->entry) >= (512/32)) {
             entry->entry = 0;
             entry->sector++;
@@ -194,11 +229,12 @@ int next_dir_entry(fat32_t *fat, fat32_direntry_t *entry)
 
 int search_dir(fat32_t *fat, fat32_direntry_t *entry, int (*pred)(fat32_direntry_t *entry))
 {
-    while (next_dir_entry(fat, entry) >= 0) {
+    load_direntry(fat, entry);
+    do {
         if (pred(entry)) {
             return VFS_OK;
         }
-    }
+    } while (next_dir_entry(fat, entry) >= 0);
 
     return VFS_NOT_FOUND;
 }
@@ -290,9 +326,7 @@ fs_t *fat32_init(gbd_t *disk)
         KERNEL_PANIC("Volume label not found\n");
     }
 
-    fat->filetable[3] = &direntry;
-    fat32_read(fs, 3, fs->volume_name, 16, 0);
-    fat->filetable[3] = NULL;
+    stringcopy(fs->volume_name, direntry.sname, FAT32_SNAME_LEN);
 
     fs->unmount = fat32_unmount;
     fs->open    = fat32_open;
