@@ -171,8 +171,6 @@ void syscall_seek(openfile_t filehandle, int offset)
  */
 void syscall_handle(context_t *user_context)
 {
-    int retval;
-
     /* When a syscall is executed in userland, register a0 contains
      * the number of the syscall. Registers a1, a2 and a3 contain the
      * arguments of the syscall. The userland code expects that after
