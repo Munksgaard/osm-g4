@@ -59,24 +59,26 @@ uint32_t syscall_write(uint32_t fd, char* s, int len)
 {
     int count;
     gcd_t *gcd;
-    if (fd != FILEHANDLE_STDOUT) {
-        KERNEL_PANIC("Can only write() to standard output.");
+    if (fd == FILEHANDLE_STDOUT) {
+      gcd = process_get_current_process_entry()->fds[1];
+      count = gcd->write(gcd, s, len);
+      return count;
+    } else {
+      return vfs_write((openfile_t)fd-2, (void*)s, len);
     }
-    gcd = process_get_current_process_entry()->fds[1];
-    count = gcd->write(gcd, s, len);
-    return count;
 }
 
 uint32_t syscall_read(uint32_t fd, char* s, int len)
 {
     int count = 0;
     gcd_t *gcd;
-    if (fd != FILEHANDLE_STDIN) {
-        KERNEL_PANIC("Can only read() from standard input.");
+    if (fd == FILEHANDLE_STDIN) {
+      gcd = process_get_current_process_entry()->fds[0];
+      count = gcd->read(gcd, s, len);
+      return count;
+    } else {
+      return vfs_read((openfile_t)fd-2, (void *)s, len);
     }
-    gcd = process_get_current_process_entry()->fds[0];
-    count = gcd->read(gcd, s, len);
-    return count;
 }
 
 uint32_t syscall_join(process_id_t pid)
@@ -136,12 +138,12 @@ void syscall_condition_broadcast(usr_cond_t *cond, usr_lock_t *lock)
 
 openfile_t syscall_open(char *filename)
 {
-    return vfs_open(filename);
+    return vfs_open(filename) + 2;
 }
 
 int syscall_close(openfile_t file)
 {
-    return vfs_close(file);
+    return vfs_close(file - 2);
 }
 
 int syscall_create(char *pathname, int size)
@@ -157,7 +159,7 @@ int syscall_delete(char *pathname)
 void syscall_seek(openfile_t filehandle, int offset)
 {
     if (offset < 0) return;
-    vfs_seek(filehandle, offset);
+    vfs_seek(filehandle - 2, offset);
 }
 
 /**
