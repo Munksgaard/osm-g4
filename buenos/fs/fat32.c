@@ -658,9 +658,13 @@ fs_t * fat32_init(gbd_t *disk)
 
 
 int fat32_unmount(fs_t *fs) {
-    fs = fs;
-    KERNEL_PANIC("to implement");
-    return 0;
+    fat32_t *fat32 = fs->internal;
+    semaphore_P(fat32->lock);
+    semaphore_destroy(fat32->lock);
+
+    pagepool_free_phys_page(ADDR_KERNEL_TO_PHYS((uint32_t) fs));
+
+    return VFS_OK;
 }
 
 typedef struct {
